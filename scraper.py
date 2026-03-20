@@ -195,13 +195,13 @@ def scrape_post_detail(driver: webdriver.Chrome, url: str) -> Optional[str]:
         full_text = " ".join(paragraphs)
         full_text = _re.sub(r"\s+", " ", full_text).strip()
 
-        # Limit to 150 words to prevent 413/499 errors in Make.com
-        words = full_text.split()
-        if len(words) > 150:
-            full_text = " ".join(words[:150]) + "..."
-            log.info(f"Trimmed to 150 words ({len(full_text)} chars)")
+        # Limit to 6000 chars — safe for OpenRouter free model context
+        # (full post kept, only hard-truncated if extremely long)
+        if len(full_text) > 6000:
+            full_text = full_text[:6000].strip() + "..."
+            log.info(f"Truncated to 6000 chars")
         else:
-            log.info(f"Content: {len(words)} words ({len(full_text)} chars)")
+            log.info(f"Full content: {len(full_text)} chars")
 
         return full_text if full_text else None
 
@@ -209,8 +209,7 @@ def scrape_post_detail(driver: webdriver.Chrome, url: str) -> Optional[str]:
         log.error(f"Detail scrape failed for {url}: {e}")
         try:
             body = driver.find_element(By.TAG_NAME, "body").text
-            words = body.split()[:150]
-            return " ".join(words)
+            return body[:6000].strip() if body else None
         except Exception:
             pass
         return None
