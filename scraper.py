@@ -126,31 +126,6 @@ def load_cookies_from_env() -> Optional[list]:
 
 # ── Scraping Logic ────────────────────────────────────────────────────────────
 
-def is_today(timestamp_text: str) -> bool:
-    import re
-    t = timestamp_text.strip().lower()
-    if not t:
-        return True
-    for kw in ["week", "month", "year", "yesterday"]:
-        if kw in t:
-            return False
-    day_match = re.search(r"(\d+)\s+day", t)
-    if day_match and int(day_match.group(1)) > 0:
-        return False
-    abs_match = re.search(r"([a-z]{3})\s+(\d{1,2}),?\s+(\d{4})", t)
-    if abs_match:
-        try:
-            from datetime import datetime as dt2
-            post_date = dt2.strptime(f"{abs_match.group(1)} {abs_match.group(2)} {abs_match.group(3)}", "%b %d %Y").date()
-            today = datetime.now(timezone.utc).date()
-            return post_date == today
-        except Exception:
-            return False
-    if "minute" in t or "hour" in t or "just now" in t or "second" in t:
-        return True
-    return True
-
-
 def scrape_post_detail(driver: webdriver.Chrome, url: str) -> Optional[str]:
     try:
         driver.get(url)
@@ -164,6 +139,92 @@ def scrape_post_detail(driver: webdriver.Chrome, url: str) -> Optional[str]:
     except Exception as e:
         log.error(f"Detail scrape failed for {url}: {e}")
         return None
+
+
+
+def is_today_strict(timestamp: str) -> bool:
+    """
+    Returns True ONLY for posts from TODAY.
+    Accepted:  '5 minutes ago', '2 hours ago', 'just now', '30 seconds ago'
+    Rejected:  'Mar 18, 2026', '2 days ago', 'yesterday', 'Mar 20, 2026' (absolute = unknown exact time)
+    """
+    import re
+    t = timestamp.strip().lower()
+
+    if not t:
+        return False  # no timestamp = skip (safer)
+
+    # Reject absolute dates like "Mar 18, 2026" — even today's absolute date
+    # because LeetCode only shows absolute dates for OLDER posts
+    if re.search(r"[a-z]{3}\s+\d{1,2},?\s+\d{4}", t):
+        return False
+
+    # Reject explicit old relative times
+    if "yesterday" in t:
+        return False
+    m = re.search(r"(\d+)\s+day", t)
+    if m and int(m.group(1)) >= 1:
+        return False
+    if "week" in t or "month" in t or "year" in t:
+        return False
+
+    # Accept only: seconds, minutes, hours, just now
+    if re.search(r"\d+\s+(second|minute|hour)", t):
+        return True
+    if "just now" in t:
+        return True
+
+    return False  # unknown format → skip to be safe
+
+
+def timestamp_to_sort_key(timestamp: str) -> int:
+    """
+    Convert LeetCode timestamp to an integer for sorting (higher = more recent).
+    Handles:
+      - Relative: '27 minutes ago', '5 hours ago', 'just now'
+      - Absolute: 'Mar 18, 2026', 'Mar 20, 2026'
+    """
+    import re
+    from datetime import datetime as dt2, timedelta
+    t = timestamp.strip().lower()
+    now = datetime.now(timezone.utc)
+
+    if not t:
+        return 0
+
+    # Relative: minutes
+    m = re.search(r"(\d+)\s+minute", t)
+    if m:
+        return int((now - timedelta(minutes=int(m.group(1)))).timestamp())
+
+    # Relative: hours
+    m = re.search(r"(\d+)\s+hour", t)
+    if m:
+        return int((now - timedelta(hours=int(m.group(1)))).timestamp())
+
+    # Relative: days
+    m = re.search(r"(\d+)\s+day", t)
+    if m:
+        return int((now - timedelta(days=int(m.group(1)))).timestamp())
+
+    # just now / seconds
+    if "just now" in t or "second" in t:
+        return int(now.timestamp())
+
+    # yesterday
+    if "yesterday" in t:
+        return int((now - timedelta(days=1)).timestamp())
+
+    # Absolute: 'Mar 18, 2026' or 'Mar 18 2026'
+    m = re.search(r"([a-z]{3})\s+(\d{1,2}),?\s+(\d{4})", t)
+    if m:
+        try:
+            d = dt2.strptime(f"{m.group(1)} {m.group(2)} {m.group(3)}", "%b %d %Y")
+            return int(d.timestamp())
+        except Exception:
+            pass
+
+    return 0
 
 
 def scrape_listing(driver: webdriver.Chrome) -> list:
@@ -317,9 +378,11 @@ def scrape_listing(driver: webdriver.Chrome) -> list:
 
         log.info(f"Timestamp: {timestamp!r}")
 
-        # ── Date filter: today only ──────────────────────────────────────
-        if timestamp and not is_today(timestamp):
-            log.info(f"Skipping old post ({timestamp}): {title!r}")
+        # ── Only accept TODAY's posts ─────────────────────────────────────
+        # "Today" = relative timestamps only: minutes/hours/seconds/just now
+        # Absolute dates like "Mar 18, 2026" = old post → skip
+        if not is_today_strict(timestamp):
+            log.info(f"Skipping — not today ({timestamp!r}): {title!r}")
             continue
 
         posts.append({
@@ -327,10 +390,18 @@ def scrape_listing(driver: webdriver.Chrome) -> list:
             "title":       title,
             "description": description,
             "timestamp":   timestamp,
+            "sort_key":    timestamp_to_sort_key(timestamp),
         })
         time.sleep(SCRAPE_DELAY)
 
-    log.info(f"Found {len(posts)} valid interview posts this cycle")
+    # Sort newest first, strip sort_key
+    posts.sort(key=lambda p: p["sort_key"], reverse=True)
+    for p in posts:
+        p.pop("sort_key", None)
+
+    log.info(f"Returning {len(posts)} TODAY's interview posts (newest first)")
+    for p in posts:
+        log.info(f"  [{p['timestamp']}] {p['title']!r}")
     return posts
 
 
