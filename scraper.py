@@ -29,7 +29,7 @@ LEETCODE_URL     = "https://leetcode.com/discuss/topic/interview-experience/"
 PROCESSED_FILE   = "/data/processed_posts.json"
 MAX_POSTS        = 6
 REPROCESS_HOURS  = 10
-SCRAPE_DELAY     = 2
+SCRAPE_DELAY     = 1
 
 app = Flask(__name__)
 
@@ -84,7 +84,15 @@ def build_driver(cookies: Optional[list] = None) -> webdriver.Chrome:
     opts.add_argument("--no-sandbox")
     opts.add_argument("--disable-dev-shm-usage")
     opts.add_argument("--disable-blink-features=AutomationControlled")
-    opts.add_argument("--window-size=1920,1080")
+    opts.add_argument("--window-size=1280,720")
+    opts.add_argument("--blink-settings=imagesEnabled=false")
+    opts.add_argument("--disable-extensions")
+    opts.add_argument("--disable-gpu")
+    opts.add_argument("--disable-software-rasterizer")
+    opts.add_argument("--no-first-run")
+    opts.add_argument("--disable-default-apps")
+    opts.add_argument("--disable-background-networking")
+    opts.page_load_strategy = "eager"  # dont wait for full page load
     opts.add_argument(
         "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -93,7 +101,9 @@ def build_driver(cookies: Optional[list] = None) -> webdriver.Chrome:
     opts.add_experimental_option("excludeSwitches", ["enable-automation"])
     opts.add_experimental_option("useAutomationExtension", False)
 
+    opts.set_capability("pageLoadStrategy", "eager")
     driver = webdriver.Chrome(options=opts)
+    driver.set_page_load_timeout(25)
     driver.execute_cdp_cmd(
         "Page.addScriptToEvaluateOnNewDocument",
         {"source": "Object.defineProperty(navigator,'webdriver',{get:()=>undefined})"}
@@ -101,7 +111,7 @@ def build_driver(cookies: Optional[list] = None) -> webdriver.Chrome:
 
     if cookies:
         driver.get("https://leetcode.com")
-        time.sleep(2)
+        time.sleep(0.5)
         for ck in cookies:
             try:
                 driver.add_cookie(ck)
@@ -127,112 +137,80 @@ def load_cookies_from_env() -> Optional[list]:
 
 def scrape_post_detail(driver: webdriver.Chrome, url: str) -> Optional[str]:
     """
-    Scrape full text of a LeetCode discuss post page.
-    Based on real page structure: content lives in the main
-    article/post area. We grab everything visible in the post
-    body and exclude sidebar, navigation, and footer.
+    Scrape post content using the real LeetCode selector:
+    div.break-words > div > div p
+    Collects all paragraph text, joins, limits to 150 words
+    to avoid 413/499 payload errors in Make.com.
     """
+    import re as _re
     try:
         driver.get(url)
 
-        # Wait for the post title to appear — confirms page loaded
-        for sel in [
-            "div[class*='discuss']",
-            "div[class*='post']",
-            "div[class*='content']",
-            "h1",
-            "body",
-        ]:
+        # Wait for page content
+        for sel in ["div.break-words", "div[class*='break-words']", "h1", "body"]:
             try:
-                WebDriverWait(driver, 15).until(
+                WebDriverWait(driver, 12).until(
                     EC.presence_of_element_located((By.CSS_SELECTOR, sel))
                 )
-                log.info(f"Post page ready — matched: {sel}")
+                log.info(f"Post page loaded: {sel}")
                 break
             except TimeoutException:
                 continue
 
-        time.sleep(2)
+        time.sleep(1.5)
         soup = BeautifulSoup(driver.page_source, "html.parser")
 
-        # ── Remove noise elements first ──────────────────────────
+        # Remove noise
         for tag in soup.select("nav, footer, header, script, style, aside"):
             tag.decompose()
 
-        # Remove the right sidebar (Explore section visible in screenshot)
-        for tag in soup.find_all("div", class_=lambda c: c and any(
-            kw in str(c).lower() for kw in ["explore", "sidebar", "related", "recommend"]
-        )):
-            tag.decompose()
+        paragraphs = []
 
-        # ── Try selectors matching real LeetCode post structure ───
-        content_el = None
+        # PRIMARY: exact selector from real LeetCode post page
+        primary = soup.select("div.break-words > div > div p")
+        if primary:
+            log.info(f"Primary selector matched: {len(primary)} paragraphs")
+            paragraphs = [p.get_text(strip=True) for p in primary if p.get_text(strip=True)]
 
-        # LeetCode 2025-2026 discuss post selectors (in priority order)
-        for sel in [
-            # Main post content wrapper
-            "div.discuss-markdown-container",
-            "div[class*='discuss-markdown']",
-            # Feed item content
-            "div[class*='FeedItemContent']",
-            "div[class*='feed-item-content']",
-            # Topic/post body
-            "div[class*='topic-detail']",
-            "div[class*='topicDetail']",
-            "div[class*='post-body']",
-            "div[class*='postBody']",
-            # Content area
-            "div[class*='content__']",
-            "div.content__u3I1",
-        ]:
-            el = soup.select_one(sel)
-            if el and len(el.get_text(strip=True)) > 100:
-                content_el = el
-                log.info(f"Matched selector: {sel} | chars: {len(el.get_text())}")
-                break
+        # FALLBACK 1: any p inside break-words
+        if not paragraphs:
+            log.warning("Primary failed — trying break-words p fallback")
+            els = soup.select("div.break-words p")
+            paragraphs = [p.get_text(strip=True) for p in els if p.get_text(strip=True)]
 
-        # ── Fallback: find the main article column ────────────────
-        if not content_el:
-            log.warning("Named selectors failed — scanning for largest content block")
+        # FALLBACK 2: any paragraph on page with real text
+        if not paragraphs:
+            log.warning("Trying all page paragraphs")
+            els = soup.find_all("p")
+            paragraphs = [p.get_text(strip=True) for p in els
+                         if len(p.get_text(strip=True)) > 20]
 
-            # LeetCode post pages have a left column with the post
-            # and a right column with sidebar. Find the left column.
-            all_divs = soup.find_all("div", recursive=True)
-            # Filter: must have substantial text, not be the whole page
-            candidates = [
-                d for d in all_divs
-                if 200 < len(d.get_text(strip=True)) < 15000
-                and d.find("p") is not None  # real content has paragraphs
-            ]
-            if candidates:
-                content_el = max(candidates, key=lambda d: len(d.get_text(strip=True)))
-                log.info(f"Fallback block: {len(content_el.get_text())} chars")
+        # FALLBACK 3: body text
+        if not paragraphs:
+            log.warning("Using body text fallback")
+            body = driver.find_element(By.TAG_NAME, "body").text
+            paragraphs = [body[:3000]]
 
-        # ── Absolute last resort: full body text ──────────────────
-        if not content_el or len(content_el.get_text(strip=True)) < 100:
-            log.warning("Using full body text as last resort")
-            try:
-                body_text = driver.find_element(By.TAG_NAME, "body").text
-                # Trim to just the first 8000 chars to avoid sidebar noise
-                trimmed = body_text[:8000].strip()
-                log.info(f"Body text: {len(trimmed)} chars")
-                return trimmed if trimmed else None
-            except Exception:
-                return None
+        # Join all paragraphs
+        full_text = " ".join(paragraphs)
+        full_text = _re.sub(r"\s+", " ", full_text).strip()
 
-        text = content_el.get_text(separator="\n").strip()
-        # Clean up excessive blank lines
-        import re as _re
-        text = _re.sub(r"\n{3,}", "\n\n", text)
-        log.info(f"Final content: {len(text)} chars")
-        return text
+        # Limit to 150 words to prevent 413/499 errors in Make.com
+        words = full_text.split()
+        if len(words) > 150:
+            full_text = " ".join(words[:150]) + "..."
+            log.info(f"Trimmed to 150 words ({len(full_text)} chars)")
+        else:
+            log.info(f"Content: {len(words)} words ({len(full_text)} chars)")
+
+        return full_text if full_text else None
 
     except Exception as e:
         log.error(f"Detail scrape failed for {url}: {e}")
         try:
             body = driver.find_element(By.TAG_NAME, "body").text
-            if body and len(body) > 100:
-                return body[:8000].strip()
+            words = body.split()[:150]
+            return " ".join(words)
         except Exception:
             pass
         return None
@@ -335,7 +313,7 @@ def scrape_listing(driver: webdriver.Chrome) -> list:
         "div.overflow-hidden",               # generic card
     ]:
         try:
-            WebDriverWait(driver, 15).until(
+            WebDriverWait(driver, 8).until(
                 EC.presence_of_element_located((By.CSS_SELECTOR, wait_sel))
             )
             log.info(f"Page loaded — wait selector matched: {wait_sel}")
@@ -354,7 +332,7 @@ def scrape_listing(driver: webdriver.Chrome) -> list:
     # Scroll to trigger lazy-loaded posts
     for _ in range(3):
         driver.execute_script("window.scrollBy(0, 400);")
-        time.sleep(1)
+        time.sleep(0.5)
 
     soup = BeautifulSoup(driver.page_source, "html.parser")
 
@@ -596,7 +574,7 @@ def content_endpoint():
     Make.com calls this for each NEW post (not yet in its datastore).
     Body: { "post_url": "https://leetcode.com/discuss/..." }
     Returns: { content: "full post text..." }
-    OpenRouter extraction then runs entirely inside Make.com.
+    Hard 35s timeout prevents Railway 499 errors.
     """
     if not auth_check():
         return jsonify({"error": "Unauthorized"}), 401
@@ -607,7 +585,21 @@ def content_endpoint():
     if not post_url:
         return jsonify({"error": "Missing post_url in request body"}), 400
 
-    result = run_content_scrape(post_url)
+    import threading
+    result_holder = [None]
+
+    def scrape():
+        result_holder[0] = run_content_scrape(post_url)
+
+    t = threading.Thread(target=scrape)
+    t.start()
+    t.join(timeout=35)  # hard 35s limit — Railway times out at 60s
+
+    if result_holder[0] is None:
+        log.error(f"Scrape timed out after 35s for {post_url}")
+        return jsonify({"status": "error", "message": "Scrape timed out", "content": ""}), 500
+
+    result = result_holder[0]
     return jsonify(result), 200 if result["status"] == "success" else 500
 
 
