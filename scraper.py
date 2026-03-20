@@ -127,11 +127,27 @@ def load_cookies_from_env() -> Optional[list]:
 # ── Scraping Logic ────────────────────────────────────────────────────────────
 
 def is_today(timestamp_text: str) -> bool:
-    """Accept only fresh posts: 'X minutes ago', 'X hours ago', 'Just now'."""
-    t = timestamp_text.lower()
-    for kw in ["day", "week", "month", "year", "yesterday"]:
+    import re
+    t = timestamp_text.strip().lower()
+    if not t:
+        return True
+    for kw in ["week", "month", "year", "yesterday"]:
         if kw in t:
             return False
+    day_match = re.search(r"(\d+)\s+day", t)
+    if day_match and int(day_match.group(1)) > 0:
+        return False
+    abs_match = re.search(r"([a-z]{3})\s+(\d{1,2}),?\s+(\d{4})", t)
+    if abs_match:
+        try:
+            from datetime import datetime as dt2
+            post_date = dt2.strptime(f"{abs_match.group(1)} {abs_match.group(2)} {abs_match.group(3)}", "%b %d %Y").date()
+            today = datetime.now(timezone.utc).date()
+            return post_date == today
+        except Exception:
+            return False
+    if "minute" in t or "hour" in t or "just now" in t or "second" in t:
+        return True
     return True
 
 
@@ -152,62 +168,169 @@ def scrape_post_detail(driver: webdriver.Chrome, url: str) -> Optional[str]:
 
 def scrape_listing(driver: webdriver.Chrome) -> list:
     driver.get(LEETCODE_URL)
-    try:
-        WebDriverWait(driver, 20).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, "a.no-underline"))
-        )
-    except TimeoutException:
-        log.error("Timed out waiting for post list")
+
+    # Wait for ANY post card to appear — try multiple selectors
+    waited = False
+    for wait_sel in [
+        "div.flex.flex-col.gap-4",          # outer feed container
+        "div[class*='topic-item']",          # topic card
+        "a[href*='/discuss/']",              # any discuss link
+        "div.overflow-hidden",               # generic card
+    ]:
+        try:
+            WebDriverWait(driver, 15).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, wait_sel))
+            )
+            log.info(f"Page loaded — wait selector matched: {wait_sel}")
+            waited = True
+            break
+        except TimeoutException:
+            continue
+
+    if not waited:
+        log.error("Timed out — no post cards found after all wait selectors")
+        # Last resort: dump page source snippet for debugging
+        log.info("PAGE TITLE: " + driver.title)
+        log.info("PAGE SNIPPET: " + driver.page_source[:2000])
         return []
 
-    driver.execute_script("window.scrollBy(0, 600);")
-    time.sleep(2)
+    # Scroll to trigger lazy-loaded posts
+    for _ in range(3):
+        driver.execute_script("window.scrollBy(0, 400);")
+        time.sleep(1)
 
     soup = BeautifulSoup(driver.page_source, "html.parser")
 
-    # Primary selector from spec
-    containers = soup.select("a.no-underline.hover\\:text-blue-s")
-    # Fallback
+    # ── Strategy: find all <a> tags that link to /discuss/ posts ────────────
+    # LeetCode renders post cards as <a href="/discuss/..."> wrappers
+    # We try a cascade of selectors from most-specific to broadest
+
+    containers = []
+
+    # Selector 1: Tailwind class combo seen in LeetCode 2025-2026 UI
+    containers = soup.select("a[href*='/discuss/'][class*='no-underline']")
+
+    # Selector 2: any <a> linking to a discuss topic (numeric ID pattern)
     if not containers:
-        log.warning("Primary selector empty, trying fallback")
-        containers = soup.select("a.no-underline[href*='/discuss/']")
+        log.warning("Selector 1 empty, trying selector 2")
+        import re
+        containers = [
+            a for a in soup.find_all("a", href=True)
+            if re.search(r"/discuss/\d+/", a.get("href", ""))
+        ]
+
+    # Selector 3: broadest fallback — any discuss link with meaningful text
+    if not containers:
+        log.warning("Selector 2 empty, trying selector 3")
+        containers = [
+            a for a in soup.find_all("a", href=True)
+            if "/discuss/" in a.get("href", "") and len(a.get_text(strip=True)) > 10
+        ]
+
+    log.info(f"Raw containers found: {len(containers)}")
 
     posts = []
-    for el in containers[: MAX_POSTS * 3]:
+    seen_urls = set()
+
+    for el in containers[: MAX_POSTS * 5]:
         if len(posts) >= MAX_POSTS:
             break
 
-        # Title
-        title_el = el.select_one("div.text-sd-foreground.line-clamp-1") or \
-                   el.find("div", class_=lambda c: c and "line-clamp-1" in c)
-        title = title_el.get_text(strip=True) if title_el else ""
+        href = el.get("href", "")
+        url  = f"https://leetcode.com{href}" if href.startswith("/") else href
 
-        if "interview experience" not in title.lower():
-            log.info(f"Non-interview post found — stopping cycle: {title!r}")
-            break
+        # Skip duplicates and non-post links
+        if not url or url in seen_urls:
+            continue
+        if "/discuss/topic/" in url or url == LEETCODE_URL:
+            continue
+        seen_urls.add(url)
 
-        # Description
-        desc_el = el.select_one("div.text-sd-muted-foreground.line-clamp-2") or \
-                  el.find("div", class_=lambda c: c and "line-clamp-2" in c)
-        description = desc_el.get_text(strip=True) if desc_el else ""
+        # ── Extract title ────────────────────────────────────────────────
+        # Try specific selectors first, then fall back to largest text node
+        title = ""
 
-        # Timestamp
-        time_el = el.select_one("span[data-state='closed']")
-        timestamp = time_el.get_text(strip=True) if time_el else ""
+        # Specific Tailwind classes used in LeetCode discuss cards
+        for title_sel in [
+            "div.text-sd-foreground.line-clamp-1",
+            "div[class*='line-clamp-1']",
+            "p[class*='line-clamp-1']",
+            "span[class*='line-clamp-1']",
+        ]:
+            t = el.select_one(title_sel)
+            if t:
+                title = t.get_text(strip=True)
+                break
 
+        # Fallback: find the longest direct text block inside the <a>
+        if not title:
+            candidates = [
+                tag.get_text(strip=True)
+                for tag in el.find_all(["div", "p", "span", "h3"])
+                if len(tag.get_text(strip=True)) > 10
+            ]
+            title = max(candidates, key=len) if candidates else el.get_text(strip=True)[:120]
+
+        if not title:
+            continue
+
+        log.info(f"Post found: {title!r}")
+
+        # ── Interview experience filter ──────────────────────────────────
+        if "interview" not in title.lower() and "experience" not in title.lower():
+            log.info(f"Skipping non-interview post: {title!r}")
+            continue
+
+        # ── Extract description ──────────────────────────────────────────
+        description = ""
+        for desc_sel in [
+            "div.text-sd-muted-foreground.line-clamp-2",
+            "div[class*='line-clamp-2']",
+            "p[class*='line-clamp-2']",
+        ]:
+            d = el.select_one(desc_sel)
+            if d:
+                description = d.get_text(strip=True)
+                break
+
+        # ── Extract timestamp ────────────────────────────────────────────
+        timestamp = ""
+        for ts_sel in [
+            "span[data-state='closed']",
+            "span[class*='text-sd-muted']",
+            "span[class*='time']",
+            "time",
+        ]:
+            t = el.select_one(ts_sel)
+            if t:
+                # prefer datetime attr on <time> tags
+                timestamp = t.get("datetime", "") or t.get_text(strip=True)
+                break
+
+        # Also check relative time text patterns anywhere inside the card
+        if not timestamp:
+            import re
+            full_text = el.get_text(" ", strip=True)
+            m = re.search(r"(\d+\s+(?:minute|hour|day|week|month)s?\s+ago|just now|yesterday)", full_text, re.I)
+            if m:
+                timestamp = m.group(1)
+
+        log.info(f"Timestamp: {timestamp!r}")
+
+        # ── Date filter: today only ──────────────────────────────────────
         if timestamp and not is_today(timestamp):
             log.info(f"Skipping old post ({timestamp}): {title!r}")
             continue
 
-        href = el.get("href", "")
-        url  = f"https://leetcode.com{href}" if href.startswith("/") else href
-        if not url:
-            continue
-
-        posts.append({"url": url, "title": title, "description": description, "timestamp": timestamp})
+        posts.append({
+            "url":         url,
+            "title":       title,
+            "description": description,
+            "timestamp":   timestamp,
+        })
         time.sleep(SCRAPE_DELAY)
 
-    log.info(f"Found {len(posts)} valid posts")
+    log.info(f"Found {len(posts)} valid interview posts this cycle")
     return posts
 
 
