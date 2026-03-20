@@ -126,19 +126,116 @@ def load_cookies_from_env() -> Optional[list]:
 # ── Scraping Logic ────────────────────────────────────────────────────────────
 
 def scrape_post_detail(driver: webdriver.Chrome, url: str) -> Optional[str]:
+    """
+    Scrape full text of a LeetCode discuss post page.
+    Based on real page structure: content lives in the main
+    article/post area. We grab everything visible in the post
+    body and exclude sidebar, navigation, and footer.
+    """
     try:
         driver.get(url)
-        WebDriverWait(driver, 15).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, "div[class*='content']"))
-        )
-        time.sleep(1)
+
+        # Wait for the post title to appear — confirms page loaded
+        for sel in [
+            "div[class*='discuss']",
+            "div[class*='post']",
+            "div[class*='content']",
+            "h1",
+            "body",
+        ]:
+            try:
+                WebDriverWait(driver, 15).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, sel))
+                )
+                log.info(f"Post page ready — matched: {sel}")
+                break
+            except TimeoutException:
+                continue
+
+        time.sleep(2)
         soup = BeautifulSoup(driver.page_source, "html.parser")
-        el = soup.select_one("div.content__u3I1") or soup.find("div", class_=lambda c: c and "content" in c)
-        return el.get_text(separator="\n").strip() if el else driver.find_element(By.TAG_NAME, "body").text
+
+        # ── Remove noise elements first ──────────────────────────
+        for tag in soup.select("nav, footer, header, script, style, aside"):
+            tag.decompose()
+
+        # Remove the right sidebar (Explore section visible in screenshot)
+        for tag in soup.find_all("div", class_=lambda c: c and any(
+            kw in str(c).lower() for kw in ["explore", "sidebar", "related", "recommend"]
+        )):
+            tag.decompose()
+
+        # ── Try selectors matching real LeetCode post structure ───
+        content_el = None
+
+        # LeetCode 2025-2026 discuss post selectors (in priority order)
+        for sel in [
+            # Main post content wrapper
+            "div.discuss-markdown-container",
+            "div[class*='discuss-markdown']",
+            # Feed item content
+            "div[class*='FeedItemContent']",
+            "div[class*='feed-item-content']",
+            # Topic/post body
+            "div[class*='topic-detail']",
+            "div[class*='topicDetail']",
+            "div[class*='post-body']",
+            "div[class*='postBody']",
+            # Content area
+            "div[class*='content__']",
+            "div.content__u3I1",
+        ]:
+            el = soup.select_one(sel)
+            if el and len(el.get_text(strip=True)) > 100:
+                content_el = el
+                log.info(f"Matched selector: {sel} | chars: {len(el.get_text())}")
+                break
+
+        # ── Fallback: find the main article column ────────────────
+        if not content_el:
+            log.warning("Named selectors failed — scanning for largest content block")
+
+            # LeetCode post pages have a left column with the post
+            # and a right column with sidebar. Find the left column.
+            all_divs = soup.find_all("div", recursive=True)
+            # Filter: must have substantial text, not be the whole page
+            candidates = [
+                d for d in all_divs
+                if 200 < len(d.get_text(strip=True)) < 15000
+                and d.find("p") is not None  # real content has paragraphs
+            ]
+            if candidates:
+                content_el = max(candidates, key=lambda d: len(d.get_text(strip=True)))
+                log.info(f"Fallback block: {len(content_el.get_text())} chars")
+
+        # ── Absolute last resort: full body text ──────────────────
+        if not content_el or len(content_el.get_text(strip=True)) < 100:
+            log.warning("Using full body text as last resort")
+            try:
+                body_text = driver.find_element(By.TAG_NAME, "body").text
+                # Trim to just the first 8000 chars to avoid sidebar noise
+                trimmed = body_text[:8000].strip()
+                log.info(f"Body text: {len(trimmed)} chars")
+                return trimmed if trimmed else None
+            except Exception:
+                return None
+
+        text = content_el.get_text(separator="\n").strip()
+        # Clean up excessive blank lines
+        import re as _re
+        text = _re.sub(r"\n{3,}", "\n\n", text)
+        log.info(f"Final content: {len(text)} chars")
+        return text
+
     except Exception as e:
         log.error(f"Detail scrape failed for {url}: {e}")
+        try:
+            body = driver.find_element(By.TAG_NAME, "body").text
+            if body and len(body) > 100:
+                return body[:8000].strip()
+        except Exception:
+            pass
         return None
-
 
 
 def is_today_strict(timestamp: str) -> bool:
