@@ -1,6 +1,7 @@
 """
 LeetCode Interview Experience Scraper
-Hosted on Railway | Triggered by Make.com every 15 minutes
+Hosted on Railway | Triggered by Make.com every 10 hours
+Two endpoints: /list (metadata) and /scrape-content (full text)
 """
 
 import os
@@ -25,8 +26,6 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 log = logging.getLogger(__name__)
 
 LEETCODE_URL     = "https://leetcode.com/discuss/topic/interview-experience/"
-OPENROUTER_KEY   = os.environ.get("OPENROUTER_API_KEY", "")
-OPENROUTER_MODEL = os.environ.get("OPENROUTER_MODEL", "mistralai/mistral-7b-instruct:free")
 PROCESSED_FILE   = "/data/processed_posts.json"
 MAX_POSTS        = 6
 REPROCESS_HOURS  = 10
@@ -405,131 +404,113 @@ def scrape_listing(driver: webdriver.Chrome) -> list:
     return posts
 
 
-# ── OpenRouter AI Extraction ──────────────────────────────────────────────────
 
-EXTRACTION_PROMPT = """\
-You are a data extraction assistant. Given the raw text of a LeetCode interview experience post, extract ALL coding problems mentioned.
+# ── /list endpoint — returns title, timestamp, URL, unique ID ─────────────────
 
-For each problem, output a JSON array where every element has:
-- "problem_title": string
-- "problem_description": string (brief, from post)
-- "leetcode_url": string (direct LC URL if identifiable, else "")
-- "difficulty": "Easy" | "Medium" | "Hard" | "Unknown"
-- "date_mentioned": string (any date near this problem, else "")
-
-Rules:
-- One object per unique problem.
-- Return ONLY the raw JSON array. No markdown, no explanation.
-- If no problems found, return [].
-
-POST TEXT:
-{post_text}
-"""
-
-
-def extract_problems_via_ai(post_text: str) -> list:
-    if not OPENROUTER_KEY:
-        log.warning("OPENROUTER_API_KEY not set — skipping AI extraction")
-        return []
-
-    try:
-        resp = requests.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {OPENROUTER_KEY}",
-                "Content-Type":  "application/json",
-                "HTTP-Referer":  "https://railway.app",
-            },
-            json={
-                "model": OPENROUTER_MODEL,
-                "messages": [{"role": "user", "content": EXTRACTION_PROMPT.format(post_text=post_text[:6000])}],
-                "temperature": 0.1,
-            },
-            timeout=30,
-        )
-        resp.raise_for_status()
-        content = resp.json()["choices"][0]["message"]["content"].strip()
-        if content.startswith("```"):
-            content = content.split("```")[1]
-            if content.startswith("json"):
-                content = content[4:]
-        problems = json.loads(content.strip())
-        return problems if isinstance(problems, list) else []
-    except Exception as e:
-        log.error(f"OpenRouter extraction failed: {e}")
-        return []
-
-
-# ── Main Scrape Cycle ─────────────────────────────────────────────────────────
-
-def run_scrape_cycle() -> dict:
-    processed = load_processed()
-    cookies   = load_cookies_from_env()
-    driver    = None
-    results   = []
+def run_list_cycle() -> dict:
+    """
+    Scrape the listing page only.
+    Returns lightweight post metadata for Make.com to check against its datastore.
+    No content scraping, no AI — just the list.
+    """
+    cookies = load_cookies_from_env()
+    driver  = None
+    posts   = []
 
     try:
         driver = build_driver(cookies)
-        posts  = scrape_listing(driver)
-
-        for post in posts:
-            url = post["url"]
-            if already_processed(url, processed):
-                log.info(f"Duplicate — skipping: {url}")
-                continue
-
-            post_text = scrape_post_detail(driver, url)
-            if post_text is None:
-                continue
-
-            problems = extract_problems_via_ai(post_text)
-            base = {
-                "post_url":         url,
-                "post_title":       post["title"],
-                "post_description": post["description"],
-                "post_timestamp":   post["timestamp"],
-                "scraped_at":       datetime.now(timezone.utc).isoformat(),
-            }
-
-            if problems:
-                for prob in problems:
-                    results.append({**base,
-                        "problem_title":       prob.get("problem_title", ""),
-                        "problem_description": prob.get("problem_description", ""),
-                        "leetcode_url":        prob.get("leetcode_url", ""),
-                        "difficulty":          prob.get("difficulty", "Unknown"),
-                        "date_mentioned":      prob.get("date_mentioned", ""),
-                    })
-            else:
-                results.append({**base,
-                    "problem_title": "", "problem_description": "",
-                    "leetcode_url": "", "difficulty": "Unknown", "date_mentioned": ""
-                })
-
-            mark_processed(url, processed)
-
-        save_processed(processed)
-        log.info(f"Cycle done — {len(results)} rows")
+        raw    = scrape_listing(driver)
+        for post in raw:
+            posts.append({
+                "post_id":    post_hash(post["url"]),
+                "title":      post["title"],
+                "timestamp":  post["timestamp"],
+                "post_url":   post["url"],
+            })
+        log.info(f"List cycle done — {len(posts)} posts")
 
     except Exception as e:
-        log.exception(f"Cycle crashed: {e}")
-        return {"status": "error", "message": str(e), "data": []}
+        log.exception(f"List cycle crashed: {e}")
+        return {"status": "error", "message": str(e), "posts": []}
     finally:
         if driver:
             driver.quit()
 
-    return {"status": "success", "count": len(results), "data": results}
+    return {"status": "success", "count": len(posts), "posts": posts}
+
+
+# ── /scrape-content endpoint — scrapes full text of ONE post URL ──────────────
+
+def run_content_scrape(post_url: str) -> dict:
+    """
+    Given a single post URL, scrape its full text content.
+    Called by Make.com only for posts not yet in its datastore.
+    Returns raw post text — OpenRouter AI extraction happens in Make.com.
+    """
+    cookies = load_cookies_from_env()
+    driver  = None
+
+    try:
+        driver    = build_driver(cookies)
+        post_text = scrape_post_detail(driver, post_url)
+
+        if post_text is None:
+            return {"status": "error", "message": "Could not scrape post content", "content": ""}
+
+        log.info(f"Content scraped ({len(post_text)} chars): {post_url}")
+        return {
+            "status":   "success",
+            "post_url": post_url,
+            "content":  post_text,
+        }
+
+    except Exception as e:
+        log.exception(f"Content scrape crashed: {e}")
+        return {"status": "error", "message": str(e), "content": ""}
+    finally:
+        if driver:
+            driver.quit()
 
 
 # ── Flask Endpoints ───────────────────────────────────────────────────────────
 
-@app.route("/scrape", methods=["POST", "GET"])
-def scrape_endpoint():
+def auth_check() -> bool:
     api_key  = request.headers.get("X-API-Key", "")
     expected = os.environ.get("SCRAPER_API_KEY", "")
-    if expected and api_key != expected:
+    return not expected or api_key == expected
+
+
+@app.route("/list", methods=["GET", "POST"])
+def list_endpoint():
+    """
+    Make.com calls this every 10 hours.
+    Returns: { posts: [ {post_id, title, timestamp, post_url}, ... ] }
+    Make.com then checks each post_id against its own datastore.
+    """
+    if not auth_check():
         return jsonify({"error": "Unauthorized"}), 401
-    result = run_scrape_cycle()
+    result = run_list_cycle()
+    return jsonify(result), 200 if result["status"] == "success" else 500
+
+
+@app.route("/scrape-content", methods=["POST"])
+def content_endpoint():
+    """
+    Make.com calls this for each NEW post (not yet in its datastore).
+    Body: { "post_url": "https://leetcode.com/discuss/..." }
+    Returns: { content: "full post text..." }
+    OpenRouter extraction then runs entirely inside Make.com.
+    """
+    if not auth_check():
+        return jsonify({"error": "Unauthorized"}), 401
+
+    body     = request.get_json(force=True, silent=True) or {}
+    post_url = body.get("post_url", "").strip()
+
+    if not post_url:
+        return jsonify({"error": "Missing post_url in request body"}), 400
+
+    result = run_content_scrape(post_url)
     return jsonify(result), 200 if result["status"] == "success" else 500
 
 
