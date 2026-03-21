@@ -246,6 +246,14 @@ def is_today_strict(timestamp: str) -> bool:
     if "just now" in t:
         return True
 
+    # Accept: "a minute ago" / "a second ago" / "an hour ago"
+    if re.match(r"^a\s+minute", t):
+        return True
+    if re.match(r"^a\s+second", t):
+        return True
+    if re.match(r"^an?\s+hour", t):
+        return True
+
     # Accept: 1–59 seconds ago
     sec_m = re.search(r"(\d+)\s+second", t)
     if sec_m:
