@@ -217,37 +217,57 @@ def scrape_post_detail(driver: webdriver.Chrome, url: str) -> Optional[str]:
 
 def is_today_strict(timestamp: str) -> bool:
     """
-    Returns True ONLY for posts from TODAY.
-    Accepted:  '5 minutes ago', '2 hours ago', 'just now', '30 seconds ago'
-    Rejected:  'Mar 18, 2026', '2 days ago', 'yesterday', 'Mar 20, 2026' (absolute = unknown exact time)
+    Accept ONLY these exact patterns:
+      - 1..59 minutes ago
+      - 1..23 hours ago
+      - just now / X seconds ago
+    Reject everything else: days, weeks, months, absolute dates.
     """
     import re
     t = timestamp.strip().lower()
 
     if not t:
-        return False  # no timestamp = skip (safer)
+        return False
 
-    # Reject absolute dates like "Mar 18, 2026" — even today's absolute date
-    # because LeetCode only shows absolute dates for OLDER posts
+    # Reject absolute dates e.g. "Mar 18, 2026"
     if re.search(r"[a-z]{3}\s+\d{1,2},?\s+\d{4}", t):
         return False
 
-    # Reject explicit old relative times
+    # Reject days / weeks / months / years / yesterday
     if "yesterday" in t:
-        return False
-    m = re.search(r"(\d+)\s+day", t)
-    if m and int(m.group(1)) >= 1:
         return False
     if "week" in t or "month" in t or "year" in t:
         return False
+    day_m = re.search(r"(\d+)\s+day", t)
+    if day_m:
+        return False
 
-    # Accept only: seconds, minutes, hours, just now
-    if re.search(r"\d+\s+(second|minute|hour)", t):
-        return True
+    # Accept: just now
     if "just now" in t:
         return True
 
-    return False  # unknown format → skip to be safe
+    # Accept: 1–59 seconds ago
+    sec_m = re.search(r"(\d+)\s+second", t)
+    if sec_m:
+        return True
+
+    # Accept: 1–59 minutes ago
+    min_m = re.search(r"(\d+)\s+minute", t)
+    if min_m:
+        n = int(min_m.group(1))
+        if 1 <= n <= 59:
+            return True
+        return False
+
+    # Accept: 1–23 hours ago
+    hr_m = re.search(r"(\d+)\s+hour", t)
+    if hr_m:
+        n = int(hr_m.group(1))
+        if 1 <= n <= 23:
+            return True
+        return False
+
+    return False
 
 
 def timestamp_to_sort_key(timestamp: str) -> int:
