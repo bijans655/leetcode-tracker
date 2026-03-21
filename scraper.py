@@ -217,37 +217,56 @@ def scrape_post_detail(driver: webdriver.Chrome, url: str) -> Optional[str]:
 
 def is_today_strict(timestamp: str) -> bool:
     """
-    Returns True ONLY for posts from TODAY.
-    Accepted:  '5 minutes ago', '2 hours ago', 'just now', '30 seconds ago'
-    Rejected:  'Mar 18, 2026', '2 days ago', 'yesterday', 'Mar 20, 2026' (absolute = unknown exact time)
+    Accept posts from the last 24 hours.
+    Handles both relative times (X minutes/hours ago)
+    and absolute dates (Mar 20, 2026) by comparing to current UTC date.
+    Scans top 10 posts and keeps those within last 24h window.
     """
     import re
+    from datetime import datetime as dt2, timedelta
     t = timestamp.strip().lower()
 
     if not t:
-        return False  # no timestamp = skip (safer)
+        return True  # no timestamp — include it
 
-    # Reject absolute dates like "Mar 18, 2026" — even today's absolute date
-    # because LeetCode only shows absolute dates for OLDER posts
-    if re.search(r"[a-z]{3}\s+\d{1,2},?\s+\d{4}", t):
-        return False
+    now = dt2.now(timezone.utc)
 
-    # Reject explicit old relative times
-    if "yesterday" in t:
-        return False
-    m = re.search(r"(\d+)\s+day", t)
-    if m and int(m.group(1)) >= 1:
-        return False
+    # Reject clearly old relative times
     if "week" in t or "month" in t or "year" in t:
         return False
+    m = re.search(r"(\d+)\s+day", t)
+    if m and int(m.group(1)) > 1:
+        return False  # 2+ days ago = reject
+    if "yesterday" in t:
+        return False
 
-    # Accept only: seconds, minutes, hours, just now
+    # Accept relative: seconds, minutes, hours, just now
     if re.search(r"\d+\s+(second|minute|hour)", t):
         return True
-    if "just now" in t:
+    if "just now" in t or "second" in t:
         return True
 
-    return False  # unknown format → skip to be safe
+    # Handle "1 day ago" = borderline — accept (within 24h)
+    m = re.search(r"(\d+)\s+day", t)
+    if m and int(m.group(1)) == 1:
+        return True
+
+    # Handle absolute dates like "Mar 20, 2026"
+    m = re.search(r"([a-z]{3})\s+(\d{1,2}),?\s+(\d{4})", t)
+    if m:
+        try:
+            post_date = dt2.strptime(
+                f"{m.group(1)} {m.group(2)} {m.group(3)}", "%b %d %Y"
+            ).replace(tzinfo=timezone.utc)
+            age_hours = (now - post_date).total_seconds() / 3600
+            # Accept if posted within last 30 hours (buffer for timezone differences)
+            result = age_hours <= 30
+            log.info(f"Absolute date {timestamp!r} → {age_hours:.1f}h ago → {'ACCEPT' if result else 'REJECT'}")
+            return result
+        except Exception:
+            return False
+
+    return True  # unknown format — include to be safe
 
 
 def timestamp_to_sort_key(timestamp: str) -> int:
@@ -366,7 +385,7 @@ def scrape_listing(driver: webdriver.Chrome) -> list:
     posts = []
     seen_urls = set()
 
-    for el in containers[: MAX_POSTS * 5]:
+    for el in containers[:10]:  # top 10 only — max 6 real posts per day
         if len(posts) >= MAX_POSTS:
             break
 
