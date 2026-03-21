@@ -382,28 +382,42 @@ def scrape_listing(driver: webdriver.Chrome) -> list:
 
     log.info(f"Raw containers found: {len(containers)}")
 
-    posts = []
+    # ── STEP 1: Pick top 10 unique valid post URLs from containers ──────────
+    import re as _re
+    TOP_N    = 10   # only look at first 10 cards — max 6 real posts published per day
     seen_urls = set()
+    top10 = []
 
-    for el in containers[:10]:  # top 10 only — max 6 real posts per day
-        if len(posts) >= MAX_POSTS:
+    for el in containers:
+        if len(top10) >= TOP_N:
             break
 
         href = el.get("href", "")
         url  = f"https://leetcode.com{href}" if href.startswith("/") else href
 
-        # Skip duplicates and non-post links
+        # Skip empty, duplicates, topic-index pages
         if not url or url in seen_urls:
             continue
         if "/discuss/topic/" in url or url == LEETCODE_URL:
             continue
+        # Must look like a real post URL (has /discuss/post/ or /discuss/<number>/)
+        if not (_re.search(r"/discuss/post/", url) or _re.search(r"/discuss/\d+/", url)):
+            continue
+
         seen_urls.add(url)
+        top10.append(el)
+
+    log.info(f"Top {len(top10)} unique post cards selected for analysis")
+
+    # ── STEP 2: Extract metadata + apply date & topic filters ───────────────
+    posts = []
+
+    for el in top10:
+        href = el.get("href", "")
+        url  = f"https://leetcode.com{href}" if href.startswith("/") else href
 
         # ── Extract title ────────────────────────────────────────────────
-        # Try specific selectors first, then fall back to largest text node
         title = ""
-
-        # Specific Tailwind classes used in LeetCode discuss cards
         for title_sel in [
             "div.text-sd-foreground.line-clamp-1",
             "div[class*='line-clamp-1']",
@@ -415,7 +429,6 @@ def scrape_listing(driver: webdriver.Chrome) -> list:
                 title = t.get_text(strip=True)
                 break
 
-        # Fallback: find the longest direct text block inside the <a>
         if not title:
             candidates = [
                 tag.get_text(strip=True)
@@ -427,11 +440,35 @@ def scrape_listing(driver: webdriver.Chrome) -> list:
         if not title:
             continue
 
-        log.info(f"Post found: {title!r}")
-
-        # ── Interview experience filter ──────────────────────────────────
+        # ── Interview/experience topic filter ────────────────────────────
         if "interview" not in title.lower() and "experience" not in title.lower():
-            log.info(f"Skipping non-interview post: {title!r}")
+            log.info(f"[SKIP-TOPIC]  {title!r}")
+            continue
+
+        # ── Extract timestamp ────────────────────────────────────────────
+        timestamp = ""
+        for ts_sel in [
+            "span[data-state='closed']",
+            "span[class*='text-sd-muted']",
+            "span[class*='time']",
+            "time",
+        ]:
+            t = el.select_one(ts_sel)
+            if t:
+                timestamp = t.get("datetime", "") or t.get_text(strip=True)
+                break
+
+        if not timestamp:
+            full_text = el.get_text(" ", strip=True)
+            m = _re.search(r"(\d+\s+(?:minute|hour|day|week|month)s?\s+ago|just now|yesterday)", full_text, _re.I)
+            if m:
+                timestamp = m.group(1)
+
+        # ── DATE FILTER: only accept relative timestamps (today) ─────────
+        # Accept: "5 minutes ago", "3 hours ago", "just now", "20 hours ago"
+        # Reject: "Mar 18, 2026", "Mar 20, 2026", "2 days ago", "yesterday"
+        if not is_today_strict(timestamp):
+            log.info(f"[SKIP-DATE]   ({timestamp}) {title!r}")
             continue
 
         # ── Extract description ──────────────────────────────────────────
@@ -446,37 +483,7 @@ def scrape_listing(driver: webdriver.Chrome) -> list:
                 description = d.get_text(strip=True)
                 break
 
-        # ── Extract timestamp ────────────────────────────────────────────
-        timestamp = ""
-        for ts_sel in [
-            "span[data-state='closed']",
-            "span[class*='text-sd-muted']",
-            "span[class*='time']",
-            "time",
-        ]:
-            t = el.select_one(ts_sel)
-            if t:
-                # prefer datetime attr on <time> tags
-                timestamp = t.get("datetime", "") or t.get_text(strip=True)
-                break
-
-        # Also check relative time text patterns anywhere inside the card
-        if not timestamp:
-            import re
-            full_text = el.get_text(" ", strip=True)
-            m = re.search(r"(\d+\s+(?:minute|hour|day|week|month)s?\s+ago|just now|yesterday)", full_text, re.I)
-            if m:
-                timestamp = m.group(1)
-
-        log.info(f"Timestamp: {timestamp!r}")
-
-        # ── Only accept TODAY's posts ─────────────────────────────────────
-        # "Today" = relative timestamps only: minutes/hours/seconds/just now
-        # Absolute dates like "Mar 18, 2026" = old post → skip
-        if not is_today_strict(timestamp):
-            log.info(f"Skipping — not today ({timestamp!r}): {title!r}")
-            continue
-
+        log.info(f"[ACCEPTED]    ({timestamp}) {title!r}")
         posts.append({
             "url":         url,
             "title":       title,
@@ -484,16 +491,13 @@ def scrape_listing(driver: webdriver.Chrome) -> list:
             "timestamp":   timestamp,
             "sort_key":    timestamp_to_sort_key(timestamp),
         })
-        time.sleep(SCRAPE_DELAY)
 
-    # Sort newest first, strip sort_key
+    # ── STEP 3: Sort newest first, return ───────────────────────────────────
     posts.sort(key=lambda p: p["sort_key"], reverse=True)
     for p in posts:
         p.pop("sort_key", None)
 
-    log.info(f"Returning {len(posts)} TODAY's interview posts (newest first)")
-    for p in posts:
-        log.info(f"  [{p['timestamp']}] {p['title']!r}")
+    log.info(f"Final: {len(posts)} today\'s interview posts (from top {TOP_N} cards)")
     return posts
 
 
