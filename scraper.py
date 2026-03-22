@@ -442,7 +442,7 @@ def scrape_listing(driver: webdriver.Chrome, url: str, max_posts: int = 6) -> li
         log.info(f"Post found: {title!r}")
 
         # ── Interview experience filter ──────────────────────────────────
-        if not any(kw in title.lower() for kw in ["interview", "experience", "sde"]):
+        if not any(kw in title.lower() for kw in ["interview", "experience", "sde","questions","question","swe","rejected","accepted","reject","accept","oa"]):
             log.info(f"Skipping — no keyword match: {title!r}")
             continue
 
