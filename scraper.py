@@ -25,11 +25,9 @@ from flask import Flask, jsonify, request
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
 
-LEETCODE_URL_1   = "https://leetcode.com/discuss/topic/interview-experience/"
-LEETCODE_URL_2   = "https://leetcode.com/discuss/topic/interview/"
+LEETCODE_URL     = "https://leetcode.com/discuss/topic/interview-experience/"
 PROCESSED_FILE   = "/data/processed_posts.json"
-MAX_POSTS_PER_URL = 6   # max 6 from URL1, max 8 from URL2
-MAX_POSTS_COMBINED = 12  # final combined max
+MAX_POSTS        = 6
 REPROCESS_HOURS  = 10
 SCRAPE_DELAY     = 1
 
@@ -330,8 +328,8 @@ def timestamp_to_sort_key(timestamp: str) -> int:
     return 0
 
 
-def scrape_listing(driver: webdriver.Chrome, url: str, max_posts: int = 6) -> list:
-    driver.get(url)
+def scrape_listing(driver: webdriver.Chrome) -> list:
+    driver.get(LEETCODE_URL)
 
     # Wait for ANY post card to appear — try multiple selectors
     waited = False
@@ -396,8 +394,8 @@ def scrape_listing(driver: webdriver.Chrome, url: str, max_posts: int = 6) -> li
     posts = []
     seen_urls = set()
 
-    for el in containers[: max_posts * 5]:
-        if len(posts) >= max_posts:
+    for el in containers[: MAX_POSTS * 5]:
+        if len(posts) >= MAX_POSTS:
             break
 
         href = el.get("href", "")
@@ -406,7 +404,7 @@ def scrape_listing(driver: webdriver.Chrome, url: str, max_posts: int = 6) -> li
         # Skip duplicates and non-post links
         if not url or url in seen_urls:
             continue
-        if "/discuss/topic/" in url or url == LEETCODE_URL:
+        if "/discuss/topic/" in url:
             continue
         seen_urls.add(url)
 
@@ -440,10 +438,9 @@ def scrape_listing(driver: webdriver.Chrome, url: str, max_posts: int = 6) -> li
 
         log.info(f"Post found: {title!r}")
 
-        # ── Title filter: interview, experience, or SDE ─────────────────
-        t_lower = title.lower()
-        if not any(kw in t_lower for kw in ["interview", "experience", "sde"]):
-            log.info(f"Skipping — no keyword match: {title!r}")
+        # ── Interview experience filter ──────────────────────────────────
+        if "interview" not in title.lower() and "experience" not in title.lower():
+            log.info(f"Skipping non-interview post: {title!r}")
             continue
 
         # ── Extract description ──────────────────────────────────────────
@@ -514,10 +511,9 @@ def scrape_listing(driver: webdriver.Chrome, url: str, max_posts: int = 6) -> li
 
 def run_list_cycle() -> dict:
     """
-    Scrape both listing pages.
-    URL1 (interview-experience): max 6 posts
-    URL2 (interview): max 8 posts
-    Combined: max 12 posts, sorted newest first, deduped by URL.
+    Scrape the listing page only.
+    Returns lightweight post metadata for Make.com to check against its datastore.
+    No content scraping, no AI — just the list.
     """
     cookies = load_cookies_from_env()
     driver  = None
@@ -525,38 +521,15 @@ def run_list_cycle() -> dict:
 
     try:
         driver = build_driver(cookies)
-
-        # ── URL 1: interview-experience — max 6 ──────────────────────────
-        log.info(f"Scraping URL1: {LEETCODE_URL_1}")
-        raw1 = scrape_listing(driver, LEETCODE_URL_1, max_posts=6)
-        log.info(f"URL1 returned {len(raw1)} posts")
-
-        # ── URL 2: interview — max 8 ──────────────────────────────────────
-        log.info(f"Scraping URL2: {LEETCODE_URL_2}")
-        raw2 = scrape_listing(driver, LEETCODE_URL_2, max_posts=8)
-        log.info(f"URL2 returned {len(raw2)} posts")
-
-        # ── Combine, dedupe by URL, sort newest first, cap at 12 ─────────
-        seen_urls = set()
-        combined  = []
-        for post in raw1 + raw2:
-            if post["url"] not in seen_urls:
-                seen_urls.add(post["url"])
-                combined.append(post)
-
-        # Sort by timestamp (newest first) using sort_key if present
-        combined.sort(key=lambda p: timestamp_to_sort_key(p.get("timestamp", "")), reverse=True)
-        combined = combined[:MAX_POSTS_COMBINED]
-
-        for post in combined:
+        raw    = scrape_listing(driver)
+        for post in raw:
             posts.append({
-                "post_id":   post_hash(post["url"]),
-                "title":     post["title"],
-                "timestamp": post["timestamp"],
-                "post_url":  post["url"],
+                "post_id":    post_hash(post["url"]),
+                "title":      post["title"],
+                "timestamp":  post["timestamp"],
+                "post_url":   post["url"],
             })
-
-        log.info(f"List cycle done — {len(posts)} combined posts (max {MAX_POSTS_COMBINED})")
+        log.info(f"List cycle done — {len(posts)} posts")
 
     except Exception as e:
         log.exception(f"List cycle crashed: {e}")
