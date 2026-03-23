@@ -140,10 +140,10 @@ def load_cookies_from_env() -> Optional[list]:
 
 def scrape_post_detail(driver: webdriver.Chrome, url: str) -> Optional[str]:
     """
-    Scrape post content using the real LeetCode selector:
-    div.break-words > div > div p
-    Collects all paragraph text, joins, limits to 150 words
-    to avoid 413/499 payload errors in Make.com.
+    Scrape post content from LeetCode discuss post.
+    Collects text from: p, ul, li, b, h1, h2, h3, h4, i tags
+    inside div.break-words — preserves full structure.
+    Limit 6000 chars for AI safety.
     """
     import re as _re
     try:
@@ -167,39 +167,55 @@ def scrape_post_detail(driver: webdriver.Chrome, url: str) -> Optional[str]:
         for tag in soup.select("nav, footer, header, script, style, aside"):
             tag.decompose()
 
-        paragraphs = []
+        # Tags to extract text from
+        CONTENT_TAGS = ["p", "ul", "li", "b", "h1", "h2", "h3", "h4", "i"]
 
-        # PRIMARY: exact selector from real LeetCode post page
-        primary = soup.select("div.break-words > div > div p")
-        if primary:
-            log.info(f"Primary selector matched: {len(primary)} paragraphs")
-            paragraphs = [p.get_text(strip=True) for p in primary if p.get_text(strip=True)]
+        lines = []
 
-        # FALLBACK 1: any p inside break-words
-        if not paragraphs:
-            log.warning("Primary failed — trying break-words p fallback")
-            els = soup.select("div.break-words p")
-            paragraphs = [p.get_text(strip=True) for p in els if p.get_text(strip=True)]
+        def extract_from_container(container):
+            """Walk container and extract text from all content tags in order."""
+            for tag in container.find_all(CONTENT_TAGS):
+                # Skip nested — e.g. li inside ul already captured by li
+                # Only take leaf-level or meaningful text
+                text = tag.get_text(separator=" ", strip=True)
+                if text and len(text) > 1:
+                    # Add prefix for headings to preserve context
+                    if tag.name in ["h1", "h2", "h3", "h4"]:
+                        lines.append(f"[{tag.name.upper()}] {text}")
+                    elif tag.name == "li":
+                        lines.append(f"- {text}")
+                    else:
+                        lines.append(text)
 
-        # FALLBACK 2: any paragraph on page with real text
-        if not paragraphs:
-            log.warning("Trying all page paragraphs")
-            els = soup.find_all("p")
-            paragraphs = [p.get_text(strip=True) for p in els
-                         if len(p.get_text(strip=True)) > 20]
+        # PRIMARY: div.break-words container
+        container = soup.select_one("div.break-words")
+        if container:
+            log.info("Primary container div.break-words found")
+            extract_from_container(container)
 
-        # FALLBACK 3: body text
-        if not paragraphs:
+        # FALLBACK 1: broader search if primary empty
+        if not lines:
+            log.warning("Primary empty — trying break-words class fallback")
+            container = soup.find("div", class_=lambda c: c and "break-words" in c)
+            if container:
+                extract_from_container(container)
+
+        # FALLBACK 2: scan whole page body for content tags
+        if not lines:
+            log.warning("Trying full page content tags")
+            extract_from_container(soup)
+
+        # FALLBACK 3: raw body text
+        if not lines:
             log.warning("Using body text fallback")
             body = driver.find_element(By.TAG_NAME, "body").text
-            paragraphs = [body[:3000]]
+            lines = [body[:3000]]
 
-        # Join all paragraphs
-        full_text = " ".join(paragraphs)
-        full_text = _re.sub(r"\s+", " ", full_text).strip()
+        # Join all lines with newline to preserve structure
+        full_text = "\n".join(lines)
+        full_text = _re.sub(r"\n{3,}", "\n\n", full_text).strip()
 
-        # Limit to 6000 chars — safe for OpenRouter free model context
-        # (full post kept, only hard-truncated if extremely long)
+        # Limit to 6000 chars
         if len(full_text) > 6000:
             full_text = full_text[:6000].strip() + "..."
             log.info(f"Truncated to 6000 chars")
