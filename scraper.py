@@ -168,7 +168,7 @@ def scrape_post_detail(driver: webdriver.Chrome, url: str) -> Optional[str]:
             tag.decompose()
 
         # Tags to extract text from
-        CONTENT_TAGS = ["p", "ul", "li", "b", "h1", "h2", "h3", "h4", "i"]
+        CONTENT_TAGS = ["p", "ul", "li", "b", "h1", "h2", "h3", "h4", "i","span"]
 
         lines = []
 
