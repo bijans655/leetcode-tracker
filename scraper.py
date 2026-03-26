@@ -105,7 +105,15 @@ def build_driver(cookies: Optional[list] = None) -> webdriver.Chrome:
     opts.add_experimental_option("useAutomationExtension", False)
 
     opts.set_capability("pageLoadStrategy", "eager")
-    driver = webdriver.Chrome(options=opts)
+    opts.binary_location = "/usr/bin/google-chrome-stable"
+
+    from selenium.webdriver.chrome.service import Service as ChromeService
+    service = ChromeService(executable_path="/usr/bin/chromedriver")
+    try:
+        driver = webdriver.Chrome(service=service, options=opts)
+    except Exception:
+        # Fallback: let selenium auto-detect
+        driver = webdriver.Chrome(options=opts)
     driver.set_page_load_timeout(25)
     driver.execute_cdp_cmd(
         "Page.addScriptToEvaluateOnNewDocument",
@@ -261,8 +269,10 @@ def is_today_strict(timestamp: str) -> bool:
     if day_m:
         return False
 
-    # Accept: just now
+    # Accept: just now / a few seconds ago
     if "just now" in t:
+        return True
+    if "a few seconds" in t:
         return True
 
     # Accept: "a minute ago" / "a second ago" / "an hour ago"
@@ -652,21 +662,8 @@ def content_endpoint():
     if not post_url:
         return jsonify({"error": "Missing post_url in request body"}), 400
 
-    import threading
-    result_holder = [None]
-
-    def scrape():
-        result_holder[0] = run_content_scrape(post_url)
-
-    t = threading.Thread(target=scrape)
-    t.start()
-    t.join(timeout=35)  # hard 35s limit — Railway times out at 60s
-
-    if result_holder[0] is None:
-        log.error(f"Scrape timed out after 35s for {post_url}")
-        return jsonify({"status": "error", "message": "Scrape timed out", "content": ""}), 500
-
-    result = result_holder[0]
+    # Direct call — no threading to avoid "can't start new thread" under load
+    result = run_content_scrape(post_url)
     return jsonify(result), 200 if result["status"] == "success" else 500
 
 
