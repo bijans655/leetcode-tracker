@@ -683,6 +683,71 @@ def clear_processed():
     return jsonify({"status": "cleared"})
 
 
+
+@app.route("/filter-new-links", methods=["POST"])
+def filter_new_links_endpoint():
+    """
+    Bulk filter endpoint — replaces per-item Google Sheets checking in Make.com.
+
+    Input:
+      {
+        "scraped_posts":     [ {"post_id": "...", "post_url": "...", ...}, ... ],
+        "existing_post_ids": [ "abc123", "def456", ... ]
+      }
+
+    Output:
+      {
+        "status":    "success",
+        "new_count": 3,
+        "new_posts": [ {"post_id": "...", "post_url": "...", ...}, ... ]
+      }
+
+    O(n) — set operations only, no loops inside loops.
+    Handles 1000+ IDs efficiently in a single request.
+    """
+    if not auth_check():
+        return jsonify({"error": "Unauthorized"}), 401
+
+    body = request.get_json(force=True, silent=True) or {}
+    scraped_posts     = body.get("scraped_posts", [])
+    existing_post_ids = body.get("existing_post_ids", [])
+
+    # Safety warning for very large sheets
+    if len(existing_post_ids) > 5000:
+        log.warning(f"existing_post_ids is large: {len(existing_post_ids)} — consider archiving old sheet rows")
+
+    log.info(f"filter-new-links → input: {len(scraped_posts)} scraped, {len(existing_post_ids)} existing")
+
+    # Step 1: deduplicate existing IDs — O(n) set conversion
+    existing_ids = set(existing_post_ids)
+    log.info(f"Unique existing IDs: {len(existing_ids)} (removed {len(existing_post_ids) - len(existing_ids)} duplicates)")
+
+    # Step 2: deduplicate scraped posts by post_id — O(n)
+    seen_scraped = set()
+    deduped_posts = []
+    for post in scraped_posts:
+        pid = post.get("post_id", "")
+        if pid and pid not in seen_scraped:
+            seen_scraped.add(pid)
+            deduped_posts.append(post)
+    dupes_removed = len(scraped_posts) - len(deduped_posts)
+    if dupes_removed:
+        log.info(f"Removed {dupes_removed} duplicate scraped posts")
+
+    # Step 3: filter — keep only posts NOT in existing_ids — O(n)
+    new_posts = [
+        post for post in deduped_posts
+        if post.get("post_id", "") not in existing_ids
+    ]
+
+    log.info(f"Result: {len(new_posts)} new posts out of {len(deduped_posts)} unique scraped")
+
+    return jsonify({
+        "status":    "success",
+        "new_count": len(new_posts),
+        "new_posts": new_posts,
+    }), 200
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port, debug=False)
