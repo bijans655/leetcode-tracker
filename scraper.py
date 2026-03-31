@@ -37,7 +37,7 @@ SCRAPE_DELAY     = 1
 app = Flask(__name__)
 
 
-# ── Persistent State ──────────────────────────────────────────────────────────
+# â”€â”€ Persistent State â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def load_processed() -> dict:
     os.makedirs(os.path.dirname(PROCESSED_FILE), exist_ok=True)
@@ -79,7 +79,7 @@ def mark_processed(url: str, processed: dict) -> None:
     }
 
 
-# ── Selenium Driver ───────────────────────────────────────────────────────────
+# â”€â”€ Selenium Driver â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def build_driver(cookies: Optional[list] = None) -> webdriver.Chrome:
     opts = Options()
@@ -144,13 +144,13 @@ def load_cookies_from_env() -> Optional[list]:
         return None
 
 
-# ── Scraping Logic ────────────────────────────────────────────────────────────
+# â”€â”€ Scraping Logic â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def scrape_post_detail(driver: webdriver.Chrome, url: str) -> Optional[str]:
     """
     Scrape post content from LeetCode discuss post.
     Collects text from: p, ul, li, b, h1, h2, h3, h4, i tags
-    inside div.break-words — preserves full structure.
+    inside div.break-words â€” preserves full structure.
     Limit 6000 chars for AI safety.
     """
     import re as _re
@@ -183,7 +183,7 @@ def scrape_post_detail(driver: webdriver.Chrome, url: str) -> Optional[str]:
         def extract_from_container(container):
             """Walk container and extract text from all content tags in order."""
             for tag in container.find_all(CONTENT_TAGS):
-                # Skip nested — e.g. li inside ul already captured by li
+                # Skip nested â€” e.g. li inside ul already captured by li
                 # Only take leaf-level or meaningful text
                 text = tag.get_text(separator=" ", strip=True)
                 if text and len(text) > 1:
@@ -203,7 +203,7 @@ def scrape_post_detail(driver: webdriver.Chrome, url: str) -> Optional[str]:
 
         # FALLBACK 1: broader search if primary empty
         if not lines:
-            log.warning("Primary empty — trying break-words class fallback")
+            log.warning("Primary empty â€” trying break-words class fallback")
             container = soup.find("div", class_=lambda c: c and "break-words" in c)
             if container:
                 extract_from_container(container)
@@ -283,12 +283,12 @@ def is_today_strict(timestamp: str) -> bool:
     if re.match(r"^an?\s+hour", t):
         return True
 
-    # Accept: 1–59 seconds ago
+    # Accept: 1â€“59 seconds ago
     sec_m = re.search(r"(\d+)\s+second", t)
     if sec_m:
         return True
 
-    # Accept: 1–59 minutes ago
+    # Accept: 1â€“59 minutes ago
     min_m = re.search(r"(\d+)\s+minute", t)
     if min_m:
         n = int(min_m.group(1))
@@ -296,7 +296,7 @@ def is_today_strict(timestamp: str) -> bool:
             return True
         return False
 
-    # Accept: 1–23 hours ago
+    # Accept: 1â€“23 hours ago
     hr_m = re.search(r"(\d+)\s+hour", t)
     if hr_m:
         n = int(hr_m.group(1))
@@ -360,7 +360,7 @@ def timestamp_to_sort_key(timestamp: str) -> int:
 def scrape_listing(driver: webdriver.Chrome, url: str, max_posts: int = 6) -> list:
     driver.get(url)
 
-    # Wait for ANY post card to appear — try multiple selectors
+    # Wait for ANY post card to appear â€” try multiple selectors
     waited = False
     for wait_sel in [
         "div.flex.flex-col.gap-4",          # outer feed container
@@ -372,14 +372,14 @@ def scrape_listing(driver: webdriver.Chrome, url: str, max_posts: int = 6) -> li
             WebDriverWait(driver, 8).until(
                 EC.presence_of_element_located((By.CSS_SELECTOR, wait_sel))
             )
-            log.info(f"Page loaded — wait selector matched: {wait_sel}")
+            log.info(f"Page loaded â€” wait selector matched: {wait_sel}")
             waited = True
             break
         except TimeoutException:
             continue
 
     if not waited:
-        log.error("Timed out — no post cards found after all wait selectors")
+        log.error("Timed out â€” no post cards found after all wait selectors")
         # Last resort: dump page source snippet for debugging
         log.info("PAGE TITLE: " + driver.title)
         log.info("PAGE SNIPPET: " + driver.page_source[:2000])
@@ -392,7 +392,7 @@ def scrape_listing(driver: webdriver.Chrome, url: str, max_posts: int = 6) -> li
 
     soup = BeautifulSoup(driver.page_source, "html.parser")
 
-    # ── Strategy: find all <a> tags that link to /discuss/ posts ────────────
+    # â”€â”€ Strategy: find all <a> tags that link to /discuss/ posts â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     # LeetCode renders post cards as <a href="/discuss/..."> wrappers
     # We try a cascade of selectors from most-specific to broadest
 
@@ -410,7 +410,7 @@ def scrape_listing(driver: webdriver.Chrome, url: str, max_posts: int = 6) -> li
             if re.search(r"/discuss/\d+/", a.get("href", ""))
         ]
 
-    # Selector 3: broadest fallback — any discuss link with meaningful text
+    # Selector 3: broadest fallback â€” any discuss link with meaningful text
     if not containers:
         log.warning("Selector 2 empty, trying selector 3")
         containers = [
@@ -437,7 +437,7 @@ def scrape_listing(driver: webdriver.Chrome, url: str, max_posts: int = 6) -> li
             continue
         seen_urls.add(url)
 
-        # ── Extract title ────────────────────────────────────────────────
+        # â”€â”€ Extract title â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         # Try specific selectors first, then fall back to largest text node
         title = ""
 
@@ -467,12 +467,12 @@ def scrape_listing(driver: webdriver.Chrome, url: str, max_posts: int = 6) -> li
 
         log.info(f"Post found: {title!r}")
 
-        # ── Interview experience filter ──────────────────────────────────
+        # â”€â”€ Interview experience filter â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if not any(kw in title.lower() for kw in ["interview", "experience", "sde","questions","question","swe","rejected","accepted","reject","accept","oa"]):
-            log.info(f"Skipping — no keyword match: {title!r}")
+            log.info(f"Skipping â€” no keyword match: {title!r}")
             continue
 
-        # ── Extract description ──────────────────────────────────────────
+        # â”€â”€ Extract description â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         description = ""
         for desc_sel in [
             "div.text-sd-muted-foreground.line-clamp-2",
@@ -484,7 +484,7 @@ def scrape_listing(driver: webdriver.Chrome, url: str, max_posts: int = 6) -> li
                 description = d.get_text(strip=True)
                 break
 
-        # ── Extract timestamp ────────────────────────────────────────────
+        # â”€â”€ Extract timestamp â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         timestamp = ""
         for ts_sel in [
             "span[data-state='closed']",
@@ -508,11 +508,11 @@ def scrape_listing(driver: webdriver.Chrome, url: str, max_posts: int = 6) -> li
 
         log.info(f"Timestamp: {timestamp!r}")
 
-        # ── Only accept TODAY's posts ─────────────────────────────────────
+        # â”€â”€ Only accept TODAY's posts â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         # "Today" = relative timestamps only: minutes/hours/seconds/just now
-        # Absolute dates like "Mar 18, 2026" = old post → skip
+        # Absolute dates like "Mar 18, 2026" = old post â†’ skip
         if not is_today_strict(timestamp):
-            log.info(f"Skipping — not today ({timestamp!r}): {title!r}")
+            log.info(f"Skipping â€” not today ({timestamp!r}): {title!r}")
             continue
 
         posts.append({
@@ -536,13 +536,13 @@ def scrape_listing(driver: webdriver.Chrome, url: str, max_posts: int = 6) -> li
 
 
 
-# ── /list endpoint — returns title, timestamp, URL, unique ID ─────────────────
+# â”€â”€ /list endpoint â€” returns title, timestamp, URL, unique ID â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def run_list_cycle() -> dict:
     """
     Scrape the listing page only.
     Returns lightweight post metadata for Make.com to check against its datastore.
-    No content scraping, no AI — just the list.
+    No content scraping, no AI â€” just the list.
     """
     cookies = load_cookies_from_env()
     driver  = None
@@ -551,17 +551,17 @@ def run_list_cycle() -> dict:
     try:
         driver = build_driver(cookies)
 
-        # URL1: interview-experience — max 6
+        # URL1: interview-experience â€” max 6
         log.info(f"Scraping URL1: {LEETCODE_URL_1}")
         raw1 = scrape_listing(driver, LEETCODE_URL_1, max_posts=6)
         log.info(f"URL1 returned {len(raw1)} posts")
 
-        # URL2: interview — max 8
+        # URL2: interview â€” max 8
         log.info(f"Scraping URL2: {LEETCODE_URL_2}")
         raw2 = scrape_listing(driver, LEETCODE_URL_2, max_posts=8)
         log.info(f"URL2 returned {len(raw2)} posts")
 
-        # Combine — dedupe by URL, sort newest first, cap at 12
+        # Combine â€” dedupe by URL, sort newest first, cap at 12
         seen_urls = set()
         combined  = []
         for post in raw1 + raw2:
@@ -579,7 +579,7 @@ def run_list_cycle() -> dict:
                 "timestamp": post["timestamp"],
                 "post_url":  post["url"],
             })
-        log.info(f"List cycle done — {len(posts)} combined posts (max {MAX_POSTS_COMBINED})")
+        log.info(f"List cycle done â€” {len(posts)} combined posts (max {MAX_POSTS_COMBINED})")
 
     except Exception as e:
         log.exception(f"List cycle crashed: {e}")
@@ -591,13 +591,13 @@ def run_list_cycle() -> dict:
     return {"status": "success", "count": len(posts), "posts": posts}
 
 
-# ── /scrape-content endpoint — scrapes full text of ONE post URL ──────────────
+# â”€â”€ /scrape-content endpoint â€” scrapes full text of ONE post URL â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def run_content_scrape(post_url: str) -> dict:
     """
     Given a single post URL, scrape its full text content.
     Called by Make.com only for posts not yet in its datastore.
-    Returns raw post text — OpenRouter AI extraction happens in Make.com.
+    Returns raw post text â€” OpenRouter AI extraction happens in Make.com.
     """
     cookies = load_cookies_from_env()
     driver  = None
@@ -624,7 +624,7 @@ def run_content_scrape(post_url: str) -> dict:
             driver.quit()
 
 
-# ── Flask Endpoints ───────────────────────────────────────────────────────────
+# â”€â”€ Flask Endpoints â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def auth_check() -> bool:
     api_key  = request.headers.get("X-API-Key", "")
@@ -662,7 +662,7 @@ def content_endpoint():
     if not post_url:
         return jsonify({"error": "Missing post_url in request body"}), 400
 
-    # Direct call — no threading to avoid "can't start new thread" under load
+    # Direct call â€” no threading to avoid "can't start new thread" under load
     result = run_content_scrape(post_url)
     return jsonify(result), 200 if result["status"] == "success" else 500
 
@@ -682,71 +682,6 @@ def clear_processed():
     save_processed({})
     return jsonify({"status": "cleared"})
 
-
-
-@app.route("/filter-new-links", methods=["POST"])
-def filter_new_links_endpoint():
-    """
-    Bulk filter endpoint — replaces per-item Google Sheets checking in Make.com.
-
-    Input:
-      {
-        "scraped_posts":     [ {"post_id": "...", "post_url": "...", ...}, ... ],
-        "existing_post_ids": [ "abc123", "def456", ... ]
-      }
-
-    Output:
-      {
-        "status":    "success",
-        "new_count": 3,
-        "new_posts": [ {"post_id": "...", "post_url": "...", ...}, ... ]
-      }
-
-    O(n) — set operations only, no loops inside loops.
-    Handles 1000+ IDs efficiently in a single request.
-    """
-    if not auth_check():
-        return jsonify({"error": "Unauthorized"}), 401
-
-    body = request.get_json(force=True, silent=True) or {}
-    scraped_posts     = body.get("scraped_posts", [])
-    existing_post_ids = body.get("existing_post_ids", [])
-
-    # Safety warning for very large sheets
-    if len(existing_post_ids) > 5000:
-        log.warning(f"existing_post_ids is large: {len(existing_post_ids)} — consider archiving old sheet rows")
-
-    log.info(f"filter-new-links → input: {len(scraped_posts)} scraped, {len(existing_post_ids)} existing")
-
-    # Step 1: deduplicate existing IDs — O(n) set conversion
-    existing_ids = set(existing_post_ids)
-    log.info(f"Unique existing IDs: {len(existing_ids)} (removed {len(existing_post_ids) - len(existing_ids)} duplicates)")
-
-    # Step 2: deduplicate scraped posts by post_id — O(n)
-    seen_scraped = set()
-    deduped_posts = []
-    for post in scraped_posts:
-        pid = post.get("post_id", "")
-        if pid and pid not in seen_scraped:
-            seen_scraped.add(pid)
-            deduped_posts.append(post)
-    dupes_removed = len(scraped_posts) - len(deduped_posts)
-    if dupes_removed:
-        log.info(f"Removed {dupes_removed} duplicate scraped posts")
-
-    # Step 3: filter — keep only posts NOT in existing_ids — O(n)
-    new_posts = [
-        post for post in deduped_posts
-        if post.get("post_id", "") not in existing_ids
-    ]
-
-    log.info(f"Result: {len(new_posts)} new posts out of {len(deduped_posts)} unique scraped")
-
-    return jsonify({
-        "status":    "success",
-        "new_count": len(new_posts),
-        "new_posts": new_posts,
-    }), 200
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
